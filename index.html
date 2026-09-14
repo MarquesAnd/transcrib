@@ -175,6 +175,30 @@
   .fallback h2{ font-family:var(--serif); font-size:24px; margin:0; }
   .fallback p{ color:var(--dim); font-size:15px; line-height:1.55; margin:0; max-width:300px; }
 
+  /* anexar áudio + qualidade */
+  .attach{ margin-top:22px; display:flex; flex-direction:column; align-items:center; gap:14px; }
+  .attach-link{ appearance:none; background:transparent; border:none; cursor:pointer;
+    color:var(--amber); font-family:var(--ui); font-size:14.5px; font-weight:600;
+    text-decoration:underline; text-underline-offset:3px; }
+  .quality{ display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--dim); }
+
+  /* barra de progresso (modo arquivo) */
+  .procbar{ display:none; padding-top:14px; }
+  body.processing .procbar{ display:block; }
+  body.processing .dock{ display:none; }
+  .procbar .bar{ height:8px; border-radius:999px; background:var(--card); overflow:hidden; }
+  .procbar .bar i{ display:block; height:100%; width:0; border-radius:999px;
+    background:linear-gradient(90deg,var(--amber),var(--amber-deep)); transition:width .3s ease; }
+  .procstat{ margin-top:10px; font-size:13px; color:var(--dim); text-align:center; }
+  body.processing .rec, body.from-file .rec{ display:none; }
+
+  /* botão "nova transcrição" após um arquivo */
+  .ghost-btn{ display:none; flex:1; appearance:none; cursor:pointer;
+    font-family:var(--ui); font-size:16px; font-weight:600; color:var(--text);
+    background:var(--card); border:1px solid var(--line); border-radius:16px; padding:16px; }
+  body.from-file .stop{ display:none; }
+  body.from-file .ghost-btn{ display:flex; align-items:center; justify-content:center; }
+
   :focus-visible{ outline:2px solid var(--amber); outline-offset:2px; }
   @media (prefers-reduced-motion: reduce){ *{animation:none !important; transition:none !important} }
 </style>
@@ -194,6 +218,19 @@
       </svg>
     </button>
     <div class="start-label">Iniciar</div>
+
+    <div class="attach">
+      <button type="button" class="attach-link" id="attachBtn">ou transcrever um áudio gravado</button>
+      <label class="quality">Qualidade
+        <select id="quality">
+          <option value="tiny">Rápida</option>
+          <option value="base" selected>Equilibrada</option>
+          <option value="small">Alta</option>
+        </select>
+      </label>
+    </div>
+    <input type="file" id="fileInput" accept="audio/*,video/*,.m4a,.mp3,.wav,.ogg,.opus,.aac,.webm" hidden>
+
     <div class="hint">Funciona melhor no Chrome (Android) ou Chrome/Edge no computador.<br>Precisa de internet e permissão do microfone.</div>
   </div>
 
@@ -220,8 +257,14 @@
 
     <div class="live-line"><span class="pin"></span><span class="txt" id="liveLine">ouvindo…</span></div>
 
+    <div class="procbar" id="procbar">
+      <div class="bar"><i id="barfill"></i></div>
+      <div class="procstat" id="procstat">Preparando…</div>
+    </div>
+
     <div class="dock">
       <button class="stop" id="toggle"><span class="sq"></span><span id="toggleLabel">Parar</span></button>
+      <button class="ghost-btn" id="resetBtn">Nova transcrição</button>
       <button class="more" id="moreBtn" aria-label="Mais opções">
         <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
       </button>
@@ -241,6 +284,7 @@
 <div class="backdrop" id="backdrop"></div>
 <div class="sheet" id="sheet">
   <div class="grip"></div>
+  <button id="a-file"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>Transcrever um áudio</button>
   <button id="a-copy"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>Copiar texto</button>
   <button id="a-txt"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v12"/><path d="M8 11l4 4 4-4"/><path d="M5 21h14"/></svg>Baixar .txt</button>
   <button id="a-doc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>Baixar Word (.doc)</button>
@@ -445,6 +489,7 @@
     stop(true);
     finalText=''; titleEl.value=''; elapsedBase=0; lastFinalTime=0;
     stream.removeAttribute('contenteditable');
+    body.classList.remove('from-file','processing');
     render(); updateWords(); updateClock(); save(); refreshState();
     liveLine.textContent='ouvindo…'; showToast('Aula apagada.');
   });
@@ -460,8 +505,144 @@
 
   window.addEventListener('beforeunload', function(e){ save(); if(listening){ e.preventDefault(); e.returnValue=''; } });
 
+  /* ---- ponte para o modo arquivo (motor Whisper, no outro script) ---- */
+  var fileInput = document.getElementById('fileInput');
+  function openPicker(){ if(listening) stop(true); fileInput.value=''; fileInput.click(); }
+  document.getElementById('attachBtn').addEventListener('click', openPicker);
+  document.getElementById('a-file').addEventListener('click', function(){ closeSheet(); openPicker(); });
+
+  document.getElementById('resetBtn').addEventListener('click', function(){
+    finalText=''; titleEl.value=''; lastFinalTime=0;
+    stream.removeAttribute('contenteditable'); render(); updateWords();
+    body.classList.remove('from-file','processing'); refreshState(); save();
+  });
+
+  window.appBridge = {
+    quality: function(){ return document.getElementById('quality').value; },
+    lang: function(){ return langSel.value; },
+    enterFileMode: function(name){
+      if(listening) stop(true);
+      finalText=''; lastFinalTime=0;
+      if(name){ titleEl.value = name.replace(/\.[^.]+$/,''); save(); }
+      stream.removeAttribute('contenteditable'); render(); updateWords();
+      body.classList.remove('from-file'); body.classList.add('session-active','processing');
+      var b=document.getElementById('barfill'); if(b) b.style.width='0%';
+    },
+    status: function(txt, pct){
+      var s=document.getElementById('procstat'); if(s && txt!=null) s.textContent=txt;
+      var b=document.getElementById('barfill'); if(b && pct!=null) b.style.width=Math.max(0,Math.min(100,pct))+'%';
+    },
+    append: function(txt){ txt=(txt||'').trim(); if(!txt) return;
+      finalText += (finalText?' ':'') + txt; render(); updateWords(); save();
+      stream.scrollTop = stream.scrollHeight;
+    },
+    finish: function(){
+      body.classList.remove('processing'); body.classList.add('from-file');
+      stream.setAttribute('contenteditable','true'); save(); showToast('Transcrição concluída.');
+    },
+    fail: function(msg){
+      body.classList.remove('processing');
+      if(finalText){ body.classList.add('from-file'); stream.setAttribute('contenteditable','true'); }
+      else { body.classList.remove('session-active'); }
+      refreshState(); showToast(msg||'Não consegui transcrever esse áudio.', true);
+    }
+  };
+
   restore();
 })();
+</script>
+
+<!-- Motor de transcrição de ARQUIVO (Whisper no navegador, via Transformers.js) -->
+<script type="module">
+  const B = () => window.appBridge;
+  const fileInput = document.getElementById('fileInput');
+  const LANG = { 'pt-BR':'portuguese', 'pt-PT':'portuguese', 'en-US':'english', 'es-ES':'spanish' };
+
+  let transcriber = null, loadedModel = null;
+
+  async function ensurePipeline(model, onProgress){
+    if(transcriber && loadedModel === model) return transcriber;
+    const { pipeline, env } = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3');
+    env.allowLocalModels = false;
+    const repo = 'Xenova/whisper-' + model;
+    try{
+      if('gpu' in navigator){
+        transcriber = await pipeline('automatic-speech-recognition', repo, { device:'webgpu', progress_callback:onProgress });
+      } else {
+        transcriber = await pipeline('automatic-speech-recognition', repo, { progress_callback:onProgress });
+      }
+    }catch(e){
+      transcriber = await pipeline('automatic-speech-recognition', repo, { progress_callback:onProgress });
+    }
+    loadedModel = model;
+    return transcriber;
+  }
+
+  async function decodeTo16k(arrayBuffer){
+    const AC = window.AudioContext || window.webkitAudioContext;
+    const ac = new AC();
+    let decoded;
+    try{ decoded = await ac.decodeAudioData(arrayBuffer); }
+    finally{ try{ ac.close(); }catch(e){} }
+    const target = 16000;
+    const frames = Math.ceil(decoded.duration * target);
+    const off = new OfflineAudioContext(1, frames, target);
+    const src = off.createBufferSource();
+    src.buffer = decoded; src.connect(off.destination); src.start();
+    const rendered = await off.startRendering();
+    return rendered.getChannelData(0);
+  }
+
+  fileInput.addEventListener('change', async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if(!file) return;
+    const bridge = B();
+    const model = bridge.quality();
+    const lang  = LANG[bridge.lang()] || 'portuguese';
+
+    bridge.enterFileMode(file.name);
+
+    let audio;
+    try{
+      bridge.status('Lendo o arquivo…', 3);
+      const buf = await file.arrayBuffer();
+      bridge.status('Preparando o áudio…', 6);
+      audio = await decodeTo16k(buf);
+    }catch(err){
+      bridge.fail('Não consegui abrir esse áudio. Tente converter para .mp3 ou .wav e reenviar.');
+      return;
+    }
+
+    let asr;
+    try{
+      bridge.status('Preparando o modelo (só na 1ª vez)…', 0);
+      asr = await ensurePipeline(model, (p) => {
+        if(p && p.status === 'progress' && typeof p.progress === 'number'){
+          bridge.status('Baixando o modelo… ' + Math.round(p.progress) + '%', Math.round(p.progress));
+        }
+      });
+    }catch(err){
+      bridge.fail('Não consegui carregar o modelo. Verifique a internet e tente de novo.');
+      return;
+    }
+
+    const SR = 16000, WIN = 30 * SR, total = audio.length;
+    const n = Math.max(1, Math.ceil(total / WIN));
+    try{
+      for(let i = 0; i < n; i++){
+        const slice = audio.subarray(i * WIN, Math.min((i + 1) * WIN, total));
+        bridge.status('Transcrevendo… ' + Math.round((i / n) * 100) + '%', Math.round((i / n) * 100));
+        const out = await asr(slice, { language: lang, task: 'transcribe' });
+        const text = (out && out.text ? out.text : '').trim();
+        if(text) bridge.append(text);
+        await new Promise(r => setTimeout(r, 0));
+      }
+      bridge.status('Concluído', 100);
+      bridge.finish();
+    }catch(err){
+      bridge.fail('A transcrição parou no meio — o texto até aqui foi mantido.');
+    }
+  });
 </script>
 </body>
 </html>
